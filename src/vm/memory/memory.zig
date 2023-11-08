@@ -34,6 +34,12 @@ pub const Memory = struct {
         std.hash_map.AutoContext(Relocatable),
         std.hash_map.default_max_load_percentage,
     ),
+    temp_data: std.ArrayHashMap(
+        Relocatable,
+        MaybeRelocatable,
+        std.array_hash_map.AutoContext(Relocatable),
+        true,
+    ),
     // The number of segments in the memory.
     num_segments: u32,
     // Validated addresses are addresses that have been validated.
@@ -69,6 +75,10 @@ pub const Memory = struct {
                 Relocatable,
                 MaybeRelocatable,
             ).init(allocator),
+            .temp_data = std.AutoArrayHashMap(
+                Relocatable,
+                MaybeRelocatable,
+            ).init(allocator),
             .num_segments = 0,
             .validated_addresses = std.AutoHashMap(
                 Relocatable,
@@ -86,6 +96,7 @@ pub const Memory = struct {
     pub fn deinit(self: *Self) void {
         // Clear the hash maps
         self.data.deinit();
+        self.temp_data.deinit();
         self.validated_addresses.deinit();
         // Deallocate self.
         self.allocator.destroy(self);
