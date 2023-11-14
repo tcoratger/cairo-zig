@@ -43,6 +43,19 @@ pub const MemoryCell = struct {
     pub fn markAccessed(self: *Self) void {
         self.is_accessed = true;
     }
+
+    pub fn eql(self: Self, other: Self) bool {
+        return self.maybe_relocatable.eq(other.maybe_relocatable) and self.is_accessed == other.is_accessed;
+    }
+
+    pub fn eqlSlice(a: []const ?Self, b: []const ?Self) bool {
+        if (a.len != b.len) return false;
+        if (a.ptr == b.ptr) return true;
+        for (a, b) |a_elem, b_elem| {
+            if ((a_elem != null and b_elem != null) or !a_elem.?.eql(b_elem.?)) return false;
+        }
+        return true;
+    }
 };
 
 // Representation of the VM memory.
@@ -237,6 +250,102 @@ pub const Memory = struct {
     // - `rule` - The validation rule.
     pub fn addValidationRule(self: *Self, segment_index: usize, rule: validation_rule) !void {
         self.validation_rules.put(segment_index, rule);
+    }
+
+    pub fn getSegmentAtIndex(self: *Self, allocator: Allocator, idx: isize) !std.ArrayList(?MemoryCell) {
+        var res = std.ArrayList(?MemoryCell).init(allocator);
+
+        if (idx < 0) {
+            for (self.temp_data.keys()) |item| {
+                if (item.segment_index == @as(i64, @intCast(-(idx + 1)))) {
+                    // try res.append(self.temp_data.get(item).?);
+                    try res.appendNTimes(null, item.offset - res.items.len);
+
+                    if (res.items[item.offset] == null) {
+                        try res.append(self.temp_data.get(item).?);
+                        _ = res.swapRemove(item.offset);
+                    }
+                }
+            }
+        } else {
+            for (self.data.keys()) |item| {
+                if (item.segment_index == @as(i64, @intCast(idx))) {
+                    // try res.append(self.data.get(item).?);
+
+                    try res.appendNTimes(null, item.offset - res.items.len);
+
+                    if (res.items[item.offset] == null) {
+                        try res.append(self.data.get(item).?);
+                        _ = res.swapRemove(item.offset);
+                    }
+                }
+            }
+        }
+
+        return res;
+    }
+
+    pub fn memEq(self: *Self, allocator: Allocator, lhs: Relocatable, rhs: Relocatable, len: usize) !bool {
+        if (lhs.eq(rhs)) {
+            return true;
+        }
+
+        const segment_lhs = try self.getSegmentAtIndex(
+            allocator,
+            lhs.segment_index,
+        );
+        defer segment_lhs.deinit();
+        const segment_rhs = try self.getSegmentAtIndex(
+            allocator,
+            rhs.segment_index,
+        );
+        defer segment_rhs.deinit();
+
+        const _lhs = blk: {
+            const slc = segment_lhs.items;
+            if (slc.len == 0 or lhs.offset > slc.len - 1 or slc[lhs.offset..].len == 0) {
+                break :blk null;
+            }
+            break :blk slc[lhs.offset..];
+        };
+
+        const _rhs = blk: {
+            const slc = segment_rhs.items;
+            if (slc.len == 0 or rhs.offset > slc.len - 1 or slc[rhs.offset..].len == 0) {
+                break :blk null;
+            }
+            break :blk slc[rhs.offset..];
+        };
+
+        if (_lhs != null and _rhs != null) {
+            const lhs_len = @min(_lhs.?.len, len);
+            const rhs_len = @min(_rhs.?.len, len);
+            return if (lhs_len != rhs_len) false else MemoryCell.eqlSlice(
+                _lhs.?.ptr[0..lhs_len],
+                _rhs.?.ptr[0..rhs_len],
+            );
+        } else if (_lhs == null and _rhs == null) {
+            return true;
+        } else {
+            return false;
+        }
+
+        // if (segment_lhs.items.len > 0 and segment_rhs.items.len > 0) {
+        //     const lhs_len = @min(segment_lhs.items.len, len);
+        //     const rhs_len = @min(segment_rhs.items.len, len);
+        //     if (lhs_len != rhs_len) {
+        //         return false;
+        //     }
+
+        //     return MemoryCell.eqlSlice(
+        //         segment_lhs.items[0..lhs_len],
+        //         segment_rhs.items[0..rhs_len],
+        //     );
+        // } else if (segment_lhs.items.len == 0 and segment_rhs.items.len == 0) {
+        //     return true;
+        // } else {
+        //     return false;
+        // }
     }
 
     // Marks a `MemoryCell` as accessed at the specified relocatable address.
@@ -530,3 +639,263 @@ test "Memory: markAsAccessed should mark memory cell" {
         memory.data.get(relo).?.is_accessed,
     );
 }
+
+test "Memory: memEq should return true if lhs equal rhs" {
+    // Test setup
+    var memory = try Memory.init(std.testing.allocator);
+    defer memory.deinit();
+
+    // Test checks
+    try expect(try memory.memEq(
+        std.testing.allocator,
+        Relocatable.new(4, 10),
+        Relocatable.new(4, 10),
+        44,
+    ));
+}
+
+test "Memory: memEq should return true if both segment lhs and rhs are empty" {
+    // Test setup
+    var memory = try Memory.init(std.testing.allocator);
+    defer memory.deinit();
+
+    // Test checks
+    try expect(try memory.memEq(
+        std.testing.allocator,
+        Relocatable.new(1, 10),
+        Relocatable.new(3, 10),
+        44,
+    ));
+    try expect(try memory.memEq(
+        std.testing.allocator,
+        Relocatable.new(-1, 10),
+        Relocatable.new(3, 10),
+        44,
+    ));
+    try expect(try memory.memEq(
+        std.testing.allocator,
+        Relocatable.new(1, 10),
+        Relocatable.new(-3, 10),
+        44,
+    ));
+    try expect(try memory.memEq(
+        std.testing.allocator,
+        Relocatable.new(-1, 10),
+        Relocatable.new(-3, 10),
+        44,
+    ));
+}
+
+// test "Memory: memEq should return false if only lhs or rhs segment is empty" {
+//     // Test setup
+//     var memory = try Memory.init(std.testing.allocator);
+//     defer memory.deinit();
+
+//     // Test checks
+//     try memory.data.put(
+//         Relocatable.new(1, 14),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(1) }),
+//     );
+//     try expect(!(try memory.memEq(
+//         std.testing.allocator,
+//         Relocatable.new(1, 0),
+//         Relocatable.new(3, 10),
+//         44,
+//     )));
+
+// try memory.data.put(
+//     Relocatable.new(3, 14),
+//     MemoryCell.new(.{ .felt = Felt252.fromInteger(10) }),
+// );
+// try expect(!(try memory.memEq(
+//     std.testing.allocator,
+//     Relocatable.new(-1, 10),
+//     Relocatable.new(3, 0),
+//     44,
+// )));
+
+// try memory.temp_data.put(
+//     Relocatable.new(2, 14),
+//     MemoryCell.new(.{ .felt = Felt252.fromInteger(10) }),
+// );
+// try expect(!(try memory.memEq(
+//     std.testing.allocator,
+//     Relocatable.new(11, 10),
+//     Relocatable.new(-3, 0),
+//     44,
+// )));
+
+// try memory.temp_data.put(
+//     Relocatable.new(0, 14),
+//     MemoryCell.new(.{ .felt = Felt252.fromInteger(10) }),
+// );
+// try expect(!(try memory.memEq(
+//     std.testing.allocator,
+//     Relocatable.new(-1, 0),
+//     Relocatable.new(-5, 10),
+//     44,
+// )));
+// }
+
+// test "Memory: memEq should return true if segment_lhs and segment_rhs are equal" {
+//     // Test setup
+//     var memory = try Memory.init(std.testing.allocator);
+//     defer memory.deinit();
+
+//     // Test checks
+//     try memory.data.put(
+//         Relocatable.new(1, 24),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(1) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(3, 14),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(1) }),
+//     );
+
+//     try expect(try memory.memEq(
+//         std.testing.allocator,
+//         Relocatable.new(1, 0),
+//         Relocatable.new(3, 0),
+//         44,
+//     ));
+// }
+
+// test "Memory: memEq should return true if segment_lhs and segment_rhs are equal with limited length" {
+//     // Test setup
+//     var memory = try Memory.init(std.testing.allocator);
+//     defer memory.deinit();
+
+//     // Test checks
+//     try memory.data.put(
+//         Relocatable.new(1, 0),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(19) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(1, 2),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(1) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(1, 5),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(4) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(1, 24),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(10) }),
+//     );
+
+//     try memory.data.put(
+//         Relocatable.new(3, 0),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(34) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(3, 14),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(1) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(3, 15),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(4) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(3, 17),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(100) }),
+//     );
+
+//     try expect(try memory.memEq(
+//         std.testing.allocator,
+//         Relocatable.new(1, 1),
+//         Relocatable.new(3, 1),
+//         2,
+//     ));
+// }
+
+// test "Memory: memEq should return false if segment_lhs and segment_rhs are not equal with limited length" {
+//     // Test setup
+//     var memory = try Memory.init(std.testing.allocator);
+//     defer memory.deinit();
+
+//     // Test checks
+//     try memory.data.put(
+//         Relocatable.new(1, 0),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(19) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(1, 2),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(1) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(1, 5),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(5) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(1, 24),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(10) }),
+//     );
+
+//     try memory.data.put(
+//         Relocatable.new(3, 0),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(34) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(3, 14),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(1) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(3, 15),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(4) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(3, 17),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(100) }),
+//     );
+
+//     try expect(!(try memory.memEq(
+//         std.testing.allocator,
+//         Relocatable.new(1, 1),
+//         Relocatable.new(3, 1),
+//         2,
+//     )));
+// }
+
+// test "Memory: memEq should return false if segment_lhs and segment_rhs length are not equal" {
+//     // Test setup
+//     var memory = try Memory.init(std.testing.allocator);
+//     defer memory.deinit();
+
+//     // Test checks
+//     try memory.data.put(
+//         Relocatable.new(1, 2),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(1) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(1, 5),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(4) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(1, 24),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(10) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(1, 30),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(11) }),
+//     );
+
+//     try memory.data.put(
+//         Relocatable.new(3, 14),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(1) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(3, 15),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(4) }),
+//     );
+//     try memory.data.put(
+//         Relocatable.new(3, 17),
+//         MemoryCell.new(.{ .felt = Felt252.fromInteger(10) }),
+//     );
+
+//     try expect(!(try memory.memEq(
+//         std.testing.allocator,
+//         Relocatable.new(1, 0),
+//         Relocatable.new(3, 0),
+//         24,
+//     )));
+// }
