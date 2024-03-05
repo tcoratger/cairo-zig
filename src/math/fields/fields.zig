@@ -673,11 +673,16 @@ pub fn Field(comptime F: type, comptime modulo: u256) type {
                 self.fe,
             );
 
+            std.debug.print("totototototo = {any}\n", .{self});
+            // std.debug.print("totototototo = {any}\n", .{non_mont});
+
             var bytes: [BytesSize]u8 = [_]u8{0} ** BytesSize;
             F.toBytes(
                 &bytes,
                 non_mont,
             );
+
+            // std.debug.print("totototototo = {any}\n", .{bytes});
 
             return std.mem.readInt(
                 u256,

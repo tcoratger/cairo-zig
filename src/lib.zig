@@ -52,3 +52,7 @@ pub const hint_processor = struct {
 pub const parser = struct {
     pub usingnamespace @import("parser/deserialize_utils.zig");
 };
+
+pub const bench = struct {
+    pub usingnamespace @import("bench/bench_field.zig");
+};
